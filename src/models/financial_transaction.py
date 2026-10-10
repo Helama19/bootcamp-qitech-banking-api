@@ -54,6 +54,12 @@ class FinancialTransaction(Base):
         nullable=False,
     )
 
+    fee = Column(
+        Numeric(15, 2),
+        nullable=False,
+        server_default="0.00",
+    )
+
     created_at = Column(
         DateTime,
         nullable=False,
@@ -64,6 +70,7 @@ class FinancialTransaction(Base):
         UniqueConstraint("transaction_key"),
         UniqueConstraint("idempotency_key"),
         CheckConstraint("amount > 0"),
+        CheckConstraint("fee >= 0"),
         CheckConstraint(
             "source_account_id IS NULL "
             "OR source_account_id <> destination_account_id"

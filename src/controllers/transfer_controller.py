@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy.exc import IntegrityError
 
@@ -14,6 +14,10 @@ from errors import (
 )
 from models import AccountStatus, TransactionType
 from repositories import AccountRepository, FinancialTransactionRepository
+
+
+TRANSFER_FEE_RATE = Decimal("0.01")
+MONEY_QUANTIZER = Decimal("0.01")
 
 
 class TransferController(BaseController):
@@ -35,6 +39,9 @@ class TransferController(BaseController):
 
         if source_account_key == destination_account_key:
             raise SameAccountTransfer(source_account_key)
+
+        fee = self._calculate_fee(amount)
+        total_amount = amount + fee
 
         existing_transaction = (
             self.transaction_repository.get_by_idempotency_key(
@@ -74,7 +81,6 @@ class TransferController(BaseController):
         if destination_account is None:
             raise NotFoundAccount(destination_account_key)
 
-        # Verifica novamente depois de adquirir os locks.
         existing_transaction = (
             self.transaction_repository.get_by_idempotency_key(
                 idempotency_key
@@ -105,16 +111,17 @@ class TransferController(BaseController):
                 destination_account.status.enumerator,
             )
 
-        if source_account.balance < amount:
+        if source_account.balance < total_amount:
             raise InsufficientBalance(source_account_key)
 
-        source_account.balance -= amount
+        source_account.balance -= total_amount
         destination_account.balance += amount
 
         transaction = self.transaction_repository.create_transfer(
             source_account_id=source_account.id,
             destination_account_id=destination_account.id,
             amount=amount,
+            fee=fee,
             idempotency_key=idempotency_key,
         )
 
@@ -145,6 +152,12 @@ class TransferController(BaseController):
             transaction,
             source_account,
             destination_account,
+        )
+
+    def _calculate_fee(self, amount: Decimal) -> Decimal:
+        return (amount * TRANSFER_FEE_RATE).quantize(
+            MONEY_QUANTIZER,
+            rounding=ROUND_HALF_UP,
         )
 
     def _handle_existing_transaction(
@@ -181,6 +194,8 @@ class TransferController(BaseController):
         source_account,
         destination_account,
     ) -> dict:
+        total_amount = transaction.amount + transaction.fee
+
         return {
             "transaction_key": str(transaction.transaction_key),
             "type": transaction.transaction_type.enumerator,
@@ -189,6 +204,8 @@ class TransferController(BaseController):
                 destination_account.account_key
             ),
             "amount": str(transaction.amount),
+            "fee": str(transaction.fee),
+            "total_amount": str(total_amount),
             "source_balance": str(source_account.balance),
             "destination_balance": str(destination_account.balance),
         }

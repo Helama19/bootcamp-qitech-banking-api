@@ -1,3 +1,4 @@
+from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import or_
@@ -24,6 +25,7 @@ class FinancialTransactionRepository:
         transaction.source_account_id = None
         transaction.destination_account_id = destination_account_id
         transaction.amount = amount
+        transaction.fee = Decimal("0.00")
 
         self.session.add(transaction)
 
@@ -34,6 +36,7 @@ class FinancialTransactionRepository:
         source_account_id: int,
         destination_account_id: int,
         amount,
+        fee,
         idempotency_key: str,
     ) -> FinancialTransaction:
         transaction = FinancialTransaction()
@@ -44,6 +47,7 @@ class FinancialTransactionRepository:
         transaction.source_account_id = source_account_id
         transaction.destination_account_id = destination_account_id
         transaction.amount = amount
+        transaction.fee = fee
 
         self.session.add(transaction)
 

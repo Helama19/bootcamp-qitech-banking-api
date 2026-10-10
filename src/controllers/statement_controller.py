@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from controllers.base_controller import BaseController
 from errors import NotFoundAccount
 from repositories import AccountRepository, FinancialTransactionRepository
@@ -39,8 +41,12 @@ class StatementController(BaseController):
         for transaction in transactions:
             if transaction.destination_account_id == account.id:
                 direction = "IN"
+                fee = Decimal("0.00")
+                total_amount = transaction.amount
             else:
                 direction = "OUT"
+                fee = transaction.fee
+                total_amount = transaction.amount + transaction.fee
 
             transaction_list.append(
                 {
@@ -50,6 +56,8 @@ class StatementController(BaseController):
                     "type": transaction.transaction_type.enumerator,
                     "direction": direction,
                     "amount": str(transaction.amount),
+                    "fee": str(fee),
+                    "total_amount": str(total_amount),
                     "created_at": transaction.created_at.isoformat(),
                 }
             )

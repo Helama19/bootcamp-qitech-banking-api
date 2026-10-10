@@ -1,5 +1,5 @@
 CREATE TABLE sample_entity_status(
-    id		                        SERIAL PRIMARY KEY,
+    id                              SERIAL PRIMARY KEY,
     enumerator                      VARCHAR(50) NOT NULL,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(enumerator)
@@ -63,7 +63,6 @@ INSERT INTO account_status (enumerator) VALUES
 ('closed');
 
 
-
 CREATE TABLE account(
     id                  SERIAL PRIMARY KEY,
     account_key         UUID NOT NULL,
@@ -79,7 +78,6 @@ CREATE TABLE account(
 );
 
 
-
 CREATE TABLE transaction_type(
     id                  SERIAL PRIMARY KEY,
     enumerator          VARCHAR(50) NOT NULL,
@@ -93,7 +91,6 @@ INSERT INTO transaction_type (enumerator) VALUES
 ('transfer');
 
 
-
 CREATE TABLE financial_transaction(
     id                      SERIAL PRIMARY KEY,
     transaction_key         UUID NOT NULL,
@@ -105,12 +102,14 @@ CREATE TABLE financial_transaction(
     destination_account_id  INTEGER NOT NULL REFERENCES account(id),
 
     amount                  NUMERIC(15, 2) NOT NULL,
+    fee                     NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
     created_at              TIMESTAMP NOT NULL DEFAULT(NOW()),
 
     UNIQUE(transaction_key),
     UNIQUE(idempotency_key),
 
     CHECK(amount > 0),
+    CHECK(fee >= 0),
 
     CHECK(
         source_account_id IS NULL
