@@ -18,23 +18,31 @@ from repositories import AccountRepository, FinancialTransactionRepository
 
 TRANSFER_FEE_RATE = Decimal("0.01")
 MONEY_QUANTIZER = Decimal("0.01")
+MAX_MONEY_VALUE = Decimal("9999999999999.99")
 
 
 class TransferController(BaseController):
     def __init__(self) -> None:
         super().__init__(__name__)
         self.account_repository = AccountRepository(self.context)
-        self.transaction_repository = FinancialTransactionRepository(self.context)
+        self.transaction_repository = FinancialTransactionRepository(
+            self.context
+        )
 
     def create(self, transfer_data: dict) -> dict:
-        self.logger.debug("Criando uma nova transferência")
+        self.logger.debug("Criando uma nova transferencia")
 
         source_account_key = transfer_data["source_account_key"]
-        destination_account_key = transfer_data["destination_account_key"]
+        destination_account_key = transfer_data[
+            "destination_account_key"
+        ]
         idempotency_key = transfer_data["idempotency_key"]
         amount = Decimal(transfer_data["amount"])
 
-        if amount <= Decimal("0.00"):
+        if (
+            amount <= Decimal("0.00")
+            or amount > MAX_MONEY_VALUE
+        ):
             raise InvalidTransactionAmount(amount)
 
         if source_account_key == destination_account_key:
@@ -42,6 +50,12 @@ class TransferController(BaseController):
 
         fee = self._calculate_fee(amount)
         total_amount = amount + fee
+
+        if (
+            fee > MAX_MONEY_VALUE
+            or total_amount > MAX_MONEY_VALUE
+        ):
+            raise InvalidTransactionAmount(amount)
 
         existing_transaction = (
             self.transaction_repository.get_by_idempotency_key(
@@ -114,8 +128,17 @@ class TransferController(BaseController):
         if source_account.balance < total_amount:
             raise InsufficientBalance(source_account_key)
 
+        destination_resulting_balance = (
+            destination_account.balance + amount
+        )
+
+        if destination_resulting_balance > MAX_MONEY_VALUE:
+            raise InvalidTransactionAmount(amount)
+
         source_account.balance -= total_amount
-        destination_account.balance += amount
+        destination_account.balance = (
+            destination_resulting_balance
+        )
 
         transaction = self.transaction_repository.create_transfer(
             source_account_id=source_account.id,
@@ -197,9 +220,13 @@ class TransferController(BaseController):
         total_amount = transaction.amount + transaction.fee
 
         return {
-            "transaction_key": str(transaction.transaction_key),
+            "transaction_key": str(
+                transaction.transaction_key
+            ),
             "type": transaction.transaction_type.enumerator,
-            "source_account_key": str(source_account.account_key),
+            "source_account_key": str(
+                source_account.account_key
+            ),
             "destination_account_key": str(
                 destination_account.account_key
             ),
@@ -207,5 +234,7 @@ class TransferController(BaseController):
             "fee": str(transaction.fee),
             "total_amount": str(total_amount),
             "source_balance": str(source_account.balance),
-            "destination_balance": str(destination_account.balance),
+            "destination_balance": str(
+                destination_account.balance
+            ),
         }

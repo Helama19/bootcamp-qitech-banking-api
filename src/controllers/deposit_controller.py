@@ -13,20 +13,28 @@ from models import AccountStatus, TransactionType
 from repositories import AccountRepository, FinancialTransactionRepository
 
 
+MAX_MONEY_VALUE = Decimal("9999999999999.99")
+
+
 class DepositController(BaseController):
     def __init__(self) -> None:
         super().__init__(__name__)
         self.account_repository = AccountRepository(self.context)
-        self.transaction_repository = FinancialTransactionRepository(self.context)
+        self.transaction_repository = FinancialTransactionRepository(
+            self.context
+        )
 
     def create(self, deposit_data: dict) -> dict:
-        self.logger.debug("Criando um novo depósito")
+        self.logger.debug("Criando um novo deposito")
 
         account_key = deposit_data["account_key"]
         idempotency_key = deposit_data["idempotency_key"]
         amount = Decimal(deposit_data["amount"])
 
-        if amount <= Decimal("0.00"):
+        if (
+            amount <= Decimal("0.00")
+            or amount > MAX_MONEY_VALUE
+        ):
             raise InvalidTransactionAmount(amount)
 
         existing_transaction = (
@@ -73,7 +81,12 @@ class DepositController(BaseController):
                 account.status.enumerator,
             )
 
-        account.balance += amount
+        resulting_balance = account.balance + amount
+
+        if resulting_balance > MAX_MONEY_VALUE:
+            raise InvalidTransactionAmount(amount)
+
+        account.balance = resulting_balance
 
         transaction = self.transaction_repository.create_deposit(
             destination_account_id=account.id,

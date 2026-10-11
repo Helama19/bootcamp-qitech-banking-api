@@ -413,3 +413,155 @@ class TestDeposit:
         status, _ = RequestGenerator.POST_deposit(payload)
 
         assert status == 400
+    def test_maximum_monetary_value_is_accepted(self):
+        account_key = self._create_account(
+            "Cliente Valor Maximo"
+        )
+
+        status, response = self._deposit(
+            account_key,
+            "9999999999999.99",
+        )
+
+        assert status == 201
+        assert response["amount"] == "9999999999999.99"
+        assert response["balance"] == "9999999999999.99"
+
+        balance_status, balance_response = (
+            RequestGenerator.GET_balance(account_key)
+        )
+
+        assert balance_status == 200
+        assert (
+            balance_response["balance"]
+            == "9999999999999.99"
+        )
+
+    def test_amount_above_monetary_limit_is_rejected(self):
+        account_key = self._create_account(
+            "Cliente Acima Limite"
+        )
+
+        status, response = self._deposit(
+            account_key,
+            "10000000000000.00",
+        )
+
+        assert status == 400
+        assert "code" in response
+
+        balance_status, balance_response = (
+            RequestGenerator.GET_balance(account_key)
+        )
+
+        assert balance_status == 200
+        assert balance_response["balance"] == "0.00"
+
+    def test_deposit_cannot_make_balance_exceed_monetary_limit(self):
+        account_key = self._create_account(
+            "Cliente Overflow Saldo"
+        )
+
+        first_status, first_response = self._deposit(
+            account_key,
+            "9999999999990.00",
+        )
+
+        assert first_status == 201
+        assert (
+            first_response["balance"]
+            == "9999999999990.00"
+        )
+
+        second_status, second_response = self._deposit(
+            account_key,
+            "10.00",
+        )
+
+        assert second_status == 422
+        assert "code" in second_response
+
+        balance_status, balance_response = (
+            RequestGenerator.GET_balance(account_key)
+        )
+
+        assert balance_status == 200
+        assert (
+            balance_response["balance"]
+            == "9999999999990.00"
+        )
+
+        statement_status, statement_response = (
+            RequestGenerator.GET_statement(
+                account_key,
+                page=1,
+                page_size=20,
+            )
+        )
+
+        assert statement_status == 200
+
+        assert statement_response["total"] == 1
+        assert len(statement_response["transactions"]) == 1
+        assert (
+            statement_response["transactions"][0]["amount"]
+            == "9999999999990.00"
+        )
+    def test_deposit_retry_after_later_movement_is_idempotent(self):
+        account_key = self._create_account(
+            "Cliente Retry Apos Movimento"
+        )
+
+        idempotency_key = str(uuid4())
+
+        first_status, first_response = self._deposit(
+            account_key,
+            "50.00",
+            idempotency_key,
+        )
+
+        assert first_status == 201
+        assert first_response["balance"] == "50.00"
+
+        later_status, later_response = self._deposit(
+            account_key,
+            "25.00",
+        )
+
+        assert later_status == 201
+        assert later_response["balance"] == "75.00"
+
+        retry_status, retry_response = self._deposit(
+            account_key,
+            "50.00",
+            idempotency_key,
+        )
+
+        assert retry_status == 201
+        assert (
+            retry_response["transaction_key"]
+            == first_response["transaction_key"]
+        )
+
+        
+        assert retry_response["balance"] == "75.00"
+
+        balance_status, balance_response = (
+            RequestGenerator.GET_balance(account_key)
+        )
+
+        assert balance_status == 200
+        assert balance_response["balance"] == "75.00"
+
+        statement_status, statement_response = (
+            RequestGenerator.GET_statement(
+                account_key,
+                page=1,
+                page_size=20,
+            )
+        )
+
+        assert statement_status == 200
+
+       
+        assert statement_response["total"] == 2

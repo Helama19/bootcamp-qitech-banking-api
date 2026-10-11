@@ -731,3 +731,229 @@ class TestTransferFee:
         status, _ = RequestGenerator.POST_transfer(payload)
 
         assert status == 400
+    def test_amount_above_monetary_limit_is_rejected(self):
+        source_account_key = self._create_account(
+            "Origem Acima Limite"
+        )
+        destination_account_key = self._create_account(
+            "Destino Acima Limite"
+        )
+
+        status, response = self._transfer(
+            source_account_key,
+            destination_account_key,
+            "10000000000000.00",
+        )
+
+        assert status == 400
+        assert "code" in response
+
+        status, source_balance = RequestGenerator.GET_balance(
+            source_account_key
+        )
+
+        assert status == 200
+        assert source_balance["balance"] == "0.00"
+
+        status, destination_balance = RequestGenerator.GET_balance(
+            destination_account_key
+        )
+
+        assert status == 200
+        assert destination_balance["balance"] == "0.00"
+
+    def test_transfer_total_with_fee_cannot_exceed_monetary_limit(self):
+        source_account_key = self._create_account(
+            "Origem Limite Tarifa"
+        )
+        destination_account_key = self._create_account(
+            "Destino Limite Tarifa"
+        )
+
+        self._deposit(
+            source_account_key,
+            "9999999999999.99",
+        )
+
+        status, response = self._transfer(
+            source_account_key,
+            destination_account_key,
+            "9999999999999.99",
+        )
+
+        assert status == 422
+        assert "code" in response
+
+        status, source_balance = RequestGenerator.GET_balance(
+            source_account_key
+        )
+
+        assert status == 200
+        assert (
+            source_balance["balance"]
+            == "9999999999999.99"
+        )
+
+        status, destination_balance = RequestGenerator.GET_balance(
+            destination_account_key
+        )
+
+        assert status == 200
+        assert destination_balance["balance"] == "0.00"
+
+        status, destination_statement = (
+            RequestGenerator.GET_statement(
+                destination_account_key,
+                page=1,
+                page_size=20,
+            )
+        )
+
+        assert status == 200
+        assert destination_statement["total"] == 0
+        assert destination_statement["transactions"] == []
+
+    def test_transfer_cannot_overflow_destination_balance(self):
+        source_account_key = self._create_account(
+            "Origem Overflow Destino"
+        )
+        destination_account_key = self._create_account(
+            "Destino Overflow"
+        )
+
+        self._deposit(
+            source_account_key,
+            "101.00",
+        )
+
+        self._deposit(
+            destination_account_key,
+            "9999999999950.00",
+        )
+
+        status, response = self._transfer(
+            source_account_key,
+            destination_account_key,
+            "50.00",
+        )
+
+        assert status == 422
+        assert "code" in response
+
+        status, source_balance = RequestGenerator.GET_balance(
+            source_account_key
+        )
+
+        assert status == 200
+        assert source_balance["balance"] == "101.00"
+
+        status, destination_balance = RequestGenerator.GET_balance(
+            destination_account_key
+        )
+
+        assert status == 200
+        assert (
+            destination_balance["balance"]
+            == "9999999999950.00"
+        )
+
+        status, source_statement = (
+            RequestGenerator.GET_statement(
+                source_account_key,
+                page=1,
+                page_size=20,
+            )
+        )
+
+        assert status == 200
+
+        
+        assert source_statement["total"] == 1
+
+        status, destination_statement = (
+            RequestGenerator.GET_statement(
+                destination_account_key,
+                page=1,
+                page_size=20,
+            )
+        )
+
+        assert status == 200
+
+        
+        assert destination_statement["total"] == 1
+    def test_transfer_retry_after_later_movement_is_idempotent(self):
+        source_account_key = self._create_account(
+            "Origem Retry Apos Movimento"
+        )
+        destination_account_key = self._create_account(
+            "Destino Retry Apos Movimento"
+        )
+
+        self._deposit(source_account_key, "200.00")
+
+        idempotency_key = str(uuid4())
+
+        first_status, first_response = self._transfer(
+            source_account_key,
+            destination_account_key,
+            "50.00",
+            idempotency_key,
+        )
+
+        assert first_status == 201
+        assert first_response["source_balance"] == "149.50"
+        assert first_response["destination_balance"] == "50.00"
+
+        self._deposit(source_account_key, "25.00")
+        self._deposit(destination_account_key, "10.00")
+
+        retry_status, retry_response = self._transfer(
+            source_account_key,
+            destination_account_key,
+            "50.00",
+            idempotency_key,
+        )
+
+        assert retry_status == 201
+        assert (
+            retry_response["transaction_key"]
+            == first_response["transaction_key"]
+        )
+        assert retry_response["amount"] == "50.00"
+        assert retry_response["fee"] == "0.50"
+        assert retry_response["total_amount"] == "50.50"
+        assert retry_response["source_balance"] == "174.50"
+        assert retry_response["destination_balance"] == "60.00"
+
+        status, source_balance = RequestGenerator.GET_balance(
+            source_account_key
+        )
+
+        assert status == 200
+        assert source_balance["balance"] == "174.50"
+
+        status, destination_balance = RequestGenerator.GET_balance(
+            destination_account_key
+        )
+
+        assert status == 200
+        assert destination_balance["balance"] == "60.00"
+
+        status, source_statement = RequestGenerator.GET_statement(
+            source_account_key,
+            page=1,
+            page_size=20,
+        )
+
+        assert status == 200
+        assert source_statement["total"] == 3
+
+        status, destination_statement = RequestGenerator.GET_statement(
+            destination_account_key,
+            page=1,
+            page_size=20,
+        )
+
+        assert status == 200
+        assert destination_statement["total"] == 2

@@ -1,5 +1,7 @@
 from datetime import date
 
+from sqlalchemy.exc import IntegrityError
+
 from controllers.base_controller import BaseController
 from errors import (
     DuplicatedDocumentNumber,
@@ -49,7 +51,20 @@ class ClientController(BaseController):
 
         client = self.client_repository.create(client_data)
 
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+
+            if (
+                self.client_repository.get_by_document_number(
+                    document_number
+                )
+                is not None
+            ):
+                raise DuplicatedDocumentNumber(document_number)
+
+            raise
 
         return {
             "client_key": str(client.client_key)

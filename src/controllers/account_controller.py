@@ -1,3 +1,5 @@
+from sqlalchemy.exc import IntegrityError
+
 from controllers.base_controller import BaseController
 from errors import ClientAlreadyHasAccount, NotFoundClient
 from repositories import AccountRepository, ClientRepository
@@ -27,7 +29,21 @@ class AccountController(BaseController):
 
         account = self.account_repository.create(client)
 
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+
+            existing_account = (
+                self.account_repository.get_by_client_id(
+                    client.id
+                )
+            )
+
+            if existing_account is not None:
+                raise ClientAlreadyHasAccount(client_key)
+
+            raise
 
         return {
             "account_key": str(account.account_key),

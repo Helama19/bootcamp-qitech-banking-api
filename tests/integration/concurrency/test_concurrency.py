@@ -422,3 +422,182 @@ class TestConcurrency:
         # termina com 99.90
         assert first_balance["balance"] == "99.90"
         assert second_balance["balance"] == "99.90"
+
+    def test_concurrent_same_cpf_creates_only_one_client(self):
+        document_number = self._cpf_without_mask()
+
+        first_payload = {
+            "name": "Cliente Concorrente Um",
+            "document_number": document_number,
+            "birth_date": "2000-01-01",
+        }
+
+        second_payload = {
+            "name": "Cliente Concorrente Dois",
+            "document_number": document_number,
+            "birth_date": "2000-01-01",
+        }
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(
+                RequestGenerator.POST_client,
+                first_payload,
+            )
+
+            second_future = executor.submit(
+                RequestGenerator.POST_client,
+                second_payload,
+            )
+
+            first_result = first_future.result()
+            second_result = second_future.result()
+
+        results = [
+            first_result,
+            second_result,
+        ]
+
+        statuses = sorted(
+            result[0]
+            for result in results
+        )
+
+        # As duas requisicoes usam o mesmo CPF.
+        # Exatamente uma deve criar o cliente.
+        # A outra deve receber conflito.
+        assert statuses == [201, 409]
+
+        successful_responses = [
+            response
+            for status, response in results
+            if status == 201
+        ]
+
+        conflict_responses = [
+            response
+            for status, response in results
+            if status == 409
+        ]
+
+        assert len(successful_responses) == 1
+        assert len(conflict_responses) == 1
+
+        assert "client_key" in successful_responses[0]
+    def test_concurrent_account_creation_for_same_client_creates_only_one(self):
+        client_payload = {
+            "name": "Cliente Concorrencia Conta",
+            "document_number": self._cpf_without_mask(),
+            "birth_date": "2000-01-01",
+        }
+
+        client_status, client_response = (
+            RequestGenerator.POST_client(client_payload)
+        )
+
+        assert client_status == 201
+
+        account_payload = {
+            "client_key": client_response["client_key"],
+        }
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(
+                RequestGenerator.POST_account,
+                account_payload,
+            )
+
+            second_future = executor.submit(
+                RequestGenerator.POST_account,
+                account_payload,
+            )
+
+            first_result = first_future.result()
+            second_result = second_future.result()
+
+        results = [
+            first_result,
+            second_result,
+        ]
+
+        statuses = sorted(
+            result[0]
+            for result in results
+        )
+
+        # As duas requisicoes tentam criar uma conta
+        # para o mesmo cliente ao mesmo tempo.
+        # Exatamente uma deve conseguir.
+        assert statuses == [201, 409]
+
+        successful_responses = [
+            response
+            for status, response in results
+            if status == 201
+        ]
+
+        conflict_responses = [
+            response
+            for status, response in results
+            if status == 409
+        ]
+
+        assert len(successful_responses) == 1
+        assert len(conflict_responses) == 1
+
+        assert "account_key" in successful_responses[0]
+        assert successful_responses[0]["balance"] == "0.00"
+        assert successful_responses[0]["status"] == "active"
+    def test_concurrent_deposits_accumulate_without_lost_update(self):
+        account_key = self._create_account(
+            "Conta Depositos Concorrentes"
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(
+                self._deposit,
+                account_key,
+                "100.00",
+                str(uuid4()),
+            )
+
+            second_future = executor.submit(
+                self._deposit,
+                account_key,
+                "200.00",
+                str(uuid4()),
+            )
+
+            first_status, _ = first_future.result()
+            second_status, _ = second_future.result()
+
+        assert first_status == 201
+        assert second_status == 201
+
+        balance_status, balance_response = (
+            RequestGenerator.GET_balance(account_key)
+        )
+
+        assert balance_status == 200
+        assert balance_response["balance"] == "300.00"
+
+        statement_status, statement = (
+            RequestGenerator.GET_statement(
+                account_key,
+                page=1,
+                page_size=20,
+            )
+        )
+
+        assert statement_status == 200
+        assert statement["total"] == 2
+        assert len(statement["transactions"]) == 2
+
+        amounts = sorted(
+            transaction["amount"]
+            for transaction in statement["transactions"]
+        )
+
+        assert amounts == [
+            "100.00",
+            "200.00",
+        ]
