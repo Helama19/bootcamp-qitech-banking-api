@@ -37,6 +37,10 @@ A API permite:
 - Transferências cobram uma tarifa de **1%** sobre o valor transferido.
 - A conta de origem paga o valor da transferência mais a tarifa.
 - A conta de destino recebe somente o valor transferido.
+- Valores monetários são representados com duas casas decimais e limitados à capacidade de `NUMERIC(15, 2)`.
+- O maior valor monetário representável pela aplicação é `9999999999999.99`.
+- Uma operação é rejeitada caso faça o saldo resultante ultrapassar esse limite.
+- Em transferências, o valor total debitado, incluindo a tarifa, também deve respeitar o limite monetário.
 
 ---
 
@@ -97,11 +101,13 @@ Responsáveis pela interface HTTP da aplicação. Recebem os dados da requisiç�
 
 ### Controllers
 
-Concentram as regras de negócio, como validação de idade, controle de status das contas, saldo suficiente, cálculo da tarifa e idempotência.
+Concentram as regras de negócio, como validação de idade, controle de status das contas, saldo suficiente, cálculo da tarifa, limites monetários e idempotência.
 
 ### Repositories
 
 Concentram o acesso ao banco de dados por meio do SQLAlchemy.
+
+Também são responsáveis pelas consultas que utilizam bloqueio pessimista durante operações financeiras concorrentes.
 
 ### Models
 
@@ -119,7 +125,9 @@ As principais entidades são:
 - `financial_transaction`
 - `transaction_type`
 
-Valores monetários são armazenados com `NUMERIC(15, 2)`.
+Valores monetários são armazenados com `NUMERIC(15, 2)`, permitindo no máximo 13 dígitos na parte inteira e 2 casas decimais.
+
+A aplicação valida esses limites antes de persistir operações financeiras.
 
 O saldo atual é armazenado diretamente na conta e atualizado na mesma transação de banco que registra a operação financeira.
 
@@ -144,7 +152,7 @@ Cada transferência possui uma tarifa de **1%**:
 tarifa = valor × 0,01
 ```
 
-A tarifa é arredondada para centavos.
+A tarifa é calculada utilizando `Decimal` e arredondada para centavos com `ROUND_HALF_UP`.
 
 Por exemplo, uma transferência de:
 
@@ -162,19 +170,27 @@ Total debitado:     R$ 101,00
 
 A conta de destino recebe `R$ 100,00`.
 
+A transferência somente é realizada quando a conta de origem possui saldo suficiente para pagar tanto o valor transferido quanto a tarifa.
+
+O valor total debitado e o saldo resultante da conta de destino também precisam respeitar o limite monetário suportado pelo banco de dados.
+
 ---
 
 ## Concorrência
 
 Operações financeiras utilizam bloqueio pessimista no PostgreSQL por meio de `SELECT ... FOR UPDATE`.
 
+Durante um depósito, a conta é bloqueada antes da atualização do saldo.
+
 Durante transferências, as duas contas envolvidas são bloqueadas em ordem determinística pelo identificador interno.
 
-Isso evita condições de corrida e reduz o risco de deadlock quando existem transferências concorrentes.
+Isso evita condições de corrida, perda de atualizações e reduz o risco de deadlock quando existem operações concorrentes.
 
 A atualização dos saldos e a criação da transação financeira acontecem dentro da mesma transação de banco de dados.
 
 Caso a operação falhe, é realizado rollback e nenhuma alteração parcial deve permanecer persistida.
+
+As restrições `UNIQUE` do banco também funcionam como garantia final em cenários concorrentes, como duas tentativas simultâneas de cadastrar o mesmo CPF, criar duas contas para o mesmo cliente ou utilizar a mesma chave de idempotência.
 
 ---
 
@@ -187,6 +203,10 @@ A mesma operação enviada novamente com a mesma chave não movimenta dinheiro u
 Se a mesma chave for reutilizada com dados diferentes, a API retorna conflito.
 
 O banco também possui uma restrição `UNIQUE` sobre a chave de idempotência como garantia final contra duplicidade.
+
+Em um retry válido, a API retorna a transação originalmente associada à chave de idempotência, sem executar novamente a movimentação.
+
+Os campos referentes à operação, como `transaction_key`, valor e tarifa, permanecem associados à transação original. Os campos de saldo representam o saldo atual da conta no momento da resposta e podem, portanto, ser diferentes dos retornados na primeira requisição caso tenham ocorrido movimentações posteriores.
 
 ---
 
@@ -323,7 +343,7 @@ python -m pytest -q
 No ambiente utilizado durante o desenvolvimento, a suíte final possui:
 
 ```text
-146 passed
+157 passed
 ```
 
 Os testes cobrem, entre outros cenários:
@@ -332,14 +352,21 @@ Os testes cobrem, entre outros cenários:
 - criação de contas;
 - depósitos;
 - transferências;
-- cálculo da tarifa;
+- cálculo e arredondamento da tarifa;
 - saldo insuficiente;
+- limites e overflow de valores monetários;
 - status das contas;
 - extrato e paginação;
-- idempotência;
-- operações financeiras concorrentes.
+- idempotência e retries após movimentações posteriores;
+- operações financeiras concorrentes;
+- cadastros concorrentes de clientes e contas;
+- prevenção de `lost update`;
+- prevenção de movimentações duplicadas;
+- transferências em sentidos opostos sem deadlock.
 
-Também existem testes concorrentes para verificar que requisições simultâneas não provoquem movimentações duplicadas ou inconsistência de saldo.
+Os testes concorrentes verificam tanto operações financeiras quanto restrições de unicidade da aplicação.
+
+Entre os cenários cobertos estão depósitos simultâneos na mesma conta, transferências disputando o mesmo saldo, requisições simultâneas com a mesma chave de idempotência, criação concorrente de clientes com o mesmo CPF e criação concorrente de contas para o mesmo cliente.
 
 ---
 
@@ -385,7 +412,7 @@ Content-Type: application/json
 
 ```json
 {
-  "destination_account_key": "<account_key>",
+  "account_key": "<account_key>",
   "amount": "100.00",
   "idempotency_key": "<uuid>"
 }
@@ -410,6 +437,13 @@ Content-Type: application/json
 
 Para uma transferência de `50.00`, a tarifa de 1% corresponde a `0.50`, portanto a conta de origem precisa possuir pelo menos `50.50`.
 
+### Consultar saldo
+
+```http
+GET /accounts/<account_key>/balance
+INTERNAL-TOKEN: default_token
+```
+
 ### Consultar extrato
 
 ```http
@@ -428,6 +462,24 @@ As rotas de negócio são protegidas por um token interno enviado por header.
 Cada requisição também recebe um `X-Request-ID`, utilizado para correlacionar os logs da aplicação.
 
 O projeto não registra o corpo completo das requisições nos logs.
+
+---
+
+## Decisões de projeto
+
+Algumas decisões foram tomadas para manter a implementação simples, consistente e segura dentro do escopo do projeto.
+
+O saldo atual é persistido diretamente na entidade `account`. O histórico financeiro é mantido em `financial_transaction`.
+
+Uma transferência é representada por uma única transação contendo conta de origem, conta de destino, valor e tarifa. O modelo não pretende implementar um ledger contábil completo de partidas dobradas.
+
+`Decimal` é utilizado nas regras financeiras para evitar cálculos monetários com ponto flutuante.
+
+O PostgreSQL utiliza `NUMERIC(15, 2)` para persistência dos valores.
+
+A consistência concorrente das movimentações financeiras é garantida por transações de banco e bloqueio pessimista das contas envolvidas.
+
+Restrições `UNIQUE` no banco funcionam como última linha de defesa para regras que também são verificadas pela aplicação, como CPF único, uma conta por cliente e chave de idempotência única.
 
 ---
 
