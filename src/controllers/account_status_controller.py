@@ -33,18 +33,15 @@ class AccountStatusController(BaseController):
 
         current_status = account.status.enumerator
 
-        # Repetir o mesmo status é uma operação idempotente.
         if current_status == new_status:
             return self._build_response(account)
 
-        # CLOSED é um estado final.
         if current_status == AccountStatus.CLOSED:
             raise AccountCannotChangeStatus(
                 current_status,
                 new_status,
             )
 
-        # Uma conta só pode ser encerrada com saldo zero.
         if (
             new_status == AccountStatus.CLOSED
             and account.balance != Decimal("0.00")

@@ -24,28 +24,26 @@ class ClientController(BaseController):
         self.logger.debug("Criando um novo cliente")
 
         document_number = client_data["document_number"]
-        birth_date = self._parse_birth_date(client_data["birth_date"])
+        birth_date = self._parse_birth_date(
+            client_data["birth_date"]
+        )
 
-        # O schema já garante que recebemos 11 dígitos.
-        # Aqui verificamos se esses dígitos formam um CPF válido.
         if not is_valid_cpf(document_number):
             raise InvalidDocumentNumber(document_number)
 
-        # Cada CPF pode possuir somente um cadastro.
         if (
-            self.client_repository.get_by_document_number(document_number)
+            self.client_repository.get_by_document_number(
+                document_number
+            )
             is not None
         ):
             raise DuplicatedDocumentNumber(document_number)
 
         age = self._age_in_years(birth_date)
 
-        # O produto é destinado somente a maiores de idade.
         if age < MINIMUM_AGE:
             raise UnderageClient(age, MINIMUM_AGE)
 
-        # Datas que implicariam idade superior a 120 anos são
-        # consideradas dados inconsistentes.
         if age > MAXIMUM_AGE:
             raise InvalidBirthdate(client_data["birth_date"])
 
@@ -63,7 +61,6 @@ class ClientController(BaseController):
         except ValueError:
             raise InvalidBirthdate(raw_birth_date)
 
-        # Uma data de nascimento não pode estar no futuro.
         if birth_date > date.today():
             raise InvalidBirthdate(raw_birth_date)
 
@@ -71,12 +68,15 @@ class ClientController(BaseController):
 
     def _age_in_years(self, birth_date: date) -> int:
         today = date.today()
-
         age = today.year - birth_date.year
 
-        # Se a pessoa ainda não fez aniversário neste ano,
-        # descontamos um ano.
-        if (today.month, today.day) < (birth_date.month, birth_date.day):
+        if (
+            today.month,
+            today.day,
+        ) < (
+            birth_date.month,
+            birth_date.day,
+        ):
             age -= 1
 
         return age
